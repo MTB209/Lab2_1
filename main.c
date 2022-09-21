@@ -4,6 +4,10 @@
 /**
  * main.c
  */
+
+typedef enum {state_idle, state_key_press_debounce, state_process_input, state_key_release_debounce} keypad_states;
+typedef enum {state_normal, state_solenoid_on, state_pre_lock, state_locked, state_lockdown} lockbox_states;
+
 void blankLED(){
      P4->OUT = 0xFF;
 }
@@ -15,7 +19,7 @@ void outputSegments(int hexIndex){
     unsigned int sseg_table[16]={0b11000000,0b11111001,0b10100100,0b10110000,
                        0B10011001,0b10010010,0b010000010,0b11111000,
                        0b10000000,0b10010000,0b10001000,0b10000011,
-                       0b11000110,0b10100001,0b11000111,0b11111111};
+                       0b11000110,0b10100001,0b11000111,0b11110111};
 
      P4->OUT = sseg_table[hexIndex];
 }
@@ -103,7 +107,7 @@ void main(void)
 }
 
 void process_open_flag(struct lockboxStruct *lb){
-    lb->state = 1;
+    lb->state = state_solenoid;
     lb->open_flag = 0;
 }
 
@@ -112,7 +116,7 @@ void process_lock_flag(struct keypadStruct *kp, struct lockboxStruct *lb){
     for(i=0; i<4; i+=1){
         lb->passcode[i] = kp->inNum[i];
     }
-    lb->state = 2;
+    lb->state = state_pre_lock;
     lb->lock_flag = 0;
 }
 
@@ -124,7 +128,7 @@ void energize_solenoid(struct lockboxStruct *lb){
 void de_energize_solenoid(struct lockboxStruct *lb){
     P2->OUT = ~BIT5;
     lb->count = 0;
-    lb->state = 0;
+    lb->state = state_normal;
 }
 
 void flash_led(struct lockboxStruct *lb){
@@ -136,7 +140,7 @@ void flash_led(struct lockboxStruct *lb){
 
 void check_cancel(struct lockboxStruct *lb){
     if(lb->cancel_flag == 1){
-        lb->state = 0;
+        lb->state = state_normal;
         lb->count = 0;
     }
     else{
@@ -152,7 +156,7 @@ void display_LOC(struct keypadStruct *kp){
 }
 
 void lock_box(struct lockboxStruct *lb){
-    lb->state = 3;
+    lb->state = state_locked;
     lb->count = 0;
 }
 
@@ -178,13 +182,13 @@ void unlock_box(struct keypadStruct *kp, struct lockboxStruct *lb){
 
     lb->open_flag = 0;
     lb->correct_passcode = 0;
-    lb->state = 1;
+    lb->state = state_solenoid;
 }
 
 void set_lockdown(struct lockboxStruct *lb){
     lb->open_flag = 0;
     lb->wrong_passcode_count = 0;
-    lb->state = 4;
+    lb->state = state_lockdown;
 }
 
 void display_Ld(struct keypadStruct *kp){
@@ -196,12 +200,12 @@ void display_Ld(struct keypadStruct *kp){
 
 void return_to_lock(struct lockboxStruct *lb){
     lb->count = 0;
-    lb->state = 3;
+    lb->state = state_locked;
 }
 
 void lockbox_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
     switch(lb->state){
-        case 0:
+        case state_normal:
         {
             if(lb->open_flag == 1){
                 process_open_flag(lb);
@@ -212,7 +216,7 @@ void lockbox_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
             else
                 break;
         }
-        case 1:
+        case state_solenoid:
         {
             if(lb->count < 5000)
                 energize_solenoid(lb);
@@ -221,7 +225,7 @@ void lockbox_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
                 break;
             }
         }
-        case 2:
+        case state_pre_lock:
         {
             if(lb->count < 20000){
                 flash_led(lb);
@@ -232,7 +236,7 @@ void lockbox_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
                 lock_box(lb);
             }
         }
-        case 3:
+        case state_locked:
         {
             if(lb->open_flag == 1){
                 check_passcode(kp, lb);
@@ -246,7 +250,7 @@ void lockbox_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
             else
                 break;
         }
-        case 4:
+        case state_lockdown:
         {
             if(lb->count < 200000){
                 display_Ld(kp);
@@ -276,31 +280,31 @@ void keypad_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
                              {0,13,15,999,0,999,999,999,14},};
 
     switch (kp->state){
-        case 0://Wait for key press
+        case state_idle://Wait for key press
         {
             if (kp->key != 0){
                 kp->rowx = kp->k;
                 kp->keyx = kp->key;
-                kp->state = 1;
+                kp->state = state_key_press_debounce;
                 kp->debounceCounter = 0;
             }
             break;
         }
-        case 1://press debounce
+        case state_key_press_debounce://press debounce
         {
             if(kp->k==kp->rowx & kp->key==kp->keyx)
                 kp->debounceCounter+=1;
             if(kp->k==kp->rowx & kp->key != kp->keyx)
-                kp->state = 0;
+                kp->state = state_idle;
             if(kp->debounceCounter>5)
-                kp->state=2;
+                kp->state = state_process_input;
             else
                 break;
         }
-        case 2://process keypress
+        case state_process_input://process keypress
         {
             int digit = keypad_table[kp->rowx][kp->keyx];
-            if(lb->state == 0){
+            if(lb->state == state_idle){
                 if(digit == 10){
                     lb->open_flag = 1;
                 }
@@ -311,28 +315,28 @@ void keypad_fsm(struct keypadStruct *kp, struct lockboxStruct *lb){
                     input_keypress(kp, digit);
                 }
             }
-            else if(lb->state == 2){
+            else if(lb->state == state_process_input){
                 if(kp->key != 0){
                     lb->cancel_flag = 1;
                 }
             }
-            else if(lb->state == 3){
+            else if(lb->state == state_key_release_debounce){
                 input_keypress(kp, digit);
             }
 
 
             kp->debounceCounter=0;
-            kp->state=3;
+            kp->state=state_key_release_debounce;
             break;
         }
-        case 3:
+        case state_key_release_debounce:
         {
             if(kp->k==kp->rowx & kp->key==0)
                 kp->debounceCounter+=1;
             if(kp->k==kp->rowx & kp->key!=0)
                 kp->debounceCounter=0;
             if(kp->debounceCounter>5)
-                kp->state=0;
+                kp->state=state_idle;
             else
                 break;
         }
